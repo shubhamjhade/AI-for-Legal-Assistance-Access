@@ -1,31 +1,47 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { generateLegalResponse } from '../lib/gemini';
 import DOMPurify from 'dompurify';
 
+const MAX_REQUESTS_PER_MINUTE = 5;
+const CHAR_LIMIT = 50000;
+
 /**
  * Custom hook to handle GenAI interactions.
- * Provides loading states, error handling, and basic input sanitization (Security & Efficiency).
+ * Features:
+ * - Loading & Error states
+ * - XSS Prevention (DOMPurify)
+ * - Rate Limiting (Security & Efficiency)
+ * - Payload Size Validation (Security)
  */
 export function useGenAI() {
   const [result, setResult] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  
+  // Rate limiting tracking
+  const requestTimestamps = useRef<number[]>([]);
 
-  /**
-   * Executes the prompt using the Gemini API.
-   * @param {string} prompt - The main prompt instruction.
-   * @param {string[]} inputs - Array of user inputs to append to the prompt.
-   */
   const execute = useCallback(async (prompt: string, inputs: string[]) => {
-    // Input validation (Security: limit payload size and prevent empty submissions)
+    // 1. Basic Empty Validation
     if (inputs.some(input => !input.trim())) {
-      setError("Input cannot be empty.");
+      setError("Security / Validation: Input cannot be empty.");
       return;
     }
 
+    // 2. Payload Size Limit (Security against DoS / Token exhaustion)
     const totalLength = inputs.reduce((acc, curr) => acc + curr.length, 0);
-    if (totalLength > 50000) {
-      setError("Input is too long. Please restrict to 50,000 characters to ensure optimal performance.");
+    if (totalLength > CHAR_LIMIT) {
+      setError(`Security Limit: Input exceeds maximum allowed length of ${CHAR_LIMIT} characters.`);
+      return;
+    }
+
+    // 3. Rate Limiting (Security & API cost control)
+    const now = Date.now();
+    // Filter timestamps from the last 60 seconds
+    requestTimestamps.current = requestTimestamps.current.filter(t => now - t < 60000);
+    
+    if (requestTimestamps.current.length >= MAX_REQUESTS_PER_MINUTE) {
+      setError("Security Limit: Too many requests. Please wait a minute before trying again to prevent abuse.");
       return;
     }
 
@@ -34,7 +50,10 @@ export function useGenAI() {
     setResult(null);
 
     try {
-      // Basic sanitization of inputs before sending to AI to prevent injection logic
+      // 4. Record timestamp for rate limiting
+      requestTimestamps.current.push(now);
+
+      // 5. Input Sanitization (Defense in depth against Prompt Injection & XSS)
       const sanitizedInputs = inputs.map(input => DOMPurify.sanitize(input, { ALLOWED_TAGS: [] }));
       
       let fullPrompt = prompt;
